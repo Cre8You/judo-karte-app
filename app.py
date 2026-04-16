@@ -43,7 +43,7 @@ st.divider()
 
 # --- 固定方法の入力 ---
 st.subheader("📋 Risk factor & scheduleに関する指示")
-st.write("【安静、固定部位・方法】")
+st.write("安静、固定部位・方法")
 
 selected_fix_r = []
 selected_fix_l = []
@@ -89,13 +89,13 @@ else:
 if not fix_summary:
     fix_summary = "特記なし"
 
-# スケジュール（テキストボックスに変更）
+# スケジュール
 schedule = st.text_input("固定、または荷重スケジュール", value="2週間継続固定")
 
 st.divider()
 
 st.subheader("🏠 社会的背景(FIM別紙計画書内)")
-social_bg = st.text_input("職業、趣味、家事活動など", placeholder="例：事務職（PC作業メイン）、週1回テニス")
+social_bg = st.text_input("職業、趣味、家事活動など", placeholder="例：事務職（PC作業メイン）")
 
 st.divider()
 
@@ -110,6 +110,9 @@ treatment = st.text_area("○実施内容", value=default_treatment, height=130)
 
 future_plan = st.text_input("○今後の治療計画", value="固定解放後のROM exへ")
 
+# 臨床推論の入力位置を修正
+reasoning = st.text_area("○臨床推論（症状の原因や評価など）", placeholder="例：受傷機転は転倒時の手掌接地。定型的なフォーク状変形あり。", height=120)
+
 st.divider()
 
 st.subheader("⚡ 消炎鎮痛及び物理療法")
@@ -117,11 +120,11 @@ c_pt1, c_pt2 = st.columns(2)
 with c_pt1:
     pt_region = st.text_input("部位", placeholder="例：右手関節周囲")
 with c_pt2:
-    pt_menu = st.text_input("メニュー", placeholder="例：アイシング、低周波、超音波")
+    pt_menu = st.text_input("メニュー", placeholder="例：アイシング")
 
 st.divider()
 
-next_visit = st.text_input("📅 次回", placeholder="例：明日来院予定")
+next_visit = st.text_input("📅 次回", placeholder="例：明日")
 
 st.divider()
 
@@ -132,9 +135,15 @@ if st.button("🚀 カルテ生成開始", use_container_width=True):
     elif not diagnosis:
         st.warning("病名を入力してください")
     else:
+        # プロンプト作成（レイアウトと強調記号の制限を強化）
         prompt = f"""
 あなたは接骨院に勤務する優秀な柔道整復師です。
-以下の入力データを元に、指定された【出力フォーマット】を一言一句違わず見出しとして使用し、新患カルテを作成してください。
+以下の入力データを元に、指定された【出力フォーマット】に沿って新患カルテを作成してください。
+
+【重要：レイアウト指示】
+・【】やアスタリスク（**）などの強調記号は、見出しを含め一切使用しないでください。
+・視覚的な見やすさを最優先し、各見出しの直後や、文章の区切りで積極的に「改行」を入れてください。
+・1つの項目が長くなる場合は、適宜改行を入れて1行あたりの文字数を抑えてください。
 
 【患者データ】
 ・疾患分類：{category}
@@ -146,40 +155,51 @@ if st.button("🚀 カルテ生成開始", use_container_width=True):
 ・症状：{symptoms}
 ・実施内容：{treatment}
 ・今後の治療計画：{future_plan}
+・臨床推論：{reasoning}
 ・物理療法部位：{pt_region}
 ・物理療法メニュー：{pt_menu}
 ・次回：{next_visit}
 
-【出力フォーマット】
+【出力フォーマット】（この構成と見出しを維持し、改行を多用してください）
 ◆Risk factor & scheduleに関する指示
-安静、固定部位・方法:
-固定、または荷重スケジュール:
+安静、固定部位・方法
+（ここに内容を記載。項目名から改行して開始してください）
+
+固定、または荷重スケジュール
+（ここに内容を記載。項目名から改行して開始してください）
 
 ◆社会的背景(FIM別紙計画書内)
-職業、趣味、家事活動など:
+職業、趣味、家事活動など
+（ここに内容を記載。項目名から改行して開始してください）
 
 ◆当日の治療状況
 ○症状:
+（ここに内容を記載。項目名から改行して開始してください）
+
 ○実施内容:
+（ここに箇条書きと説明を記載。説明文の前で改行してください）
+
 ○今後の治療計画:
+（ここに内容を記載。項目名から改行して開始してください）
+
+○臨床推論:
+（ここに内容を記載。項目名から改行して開始してください）
 
 ◆消炎鎮痛及び物理療法
 部位:
+（ここに内容を記載）
+
 メニュー:
+（ここに内容を記載）
 
-次回：
-
-【出力条件】
-・挨拶や前置きは不要。いきなり『◆Risk factor & scheduleに関する指示』から開始。
-・入力が空欄の部分は、傷病名から推測して医学的に自然な文章で補完すること。
-・強調には「【】」を使用。アスタリスク記号（**）は絶対に使用不可。
+次回： （ここに内容を記載）
 """
-        with st.spinner("AIがカルテを生成中..."):
+        with st.spinner("AIが読みやすいレイアウトでカルテを生成中..."):
             try:
                 genai.configure(api_key=gemini_key)
                 model = genai.GenerativeModel(selected_model)
                 response = model.generate_content(prompt)
                 st.subheader("✨ 出力結果")
-                st.text_area("Copy & Paste", response.text, height=550)
+                st.text_area("Copy & Paste", response.text, height=650)
             except Exception as e:
                 st.error(f"エラーが発生しました: {e}")

@@ -114,7 +114,8 @@ ADL指導
 松葉歩行訓練"""
 treatment = st.text_area("○実施内容", value=default_treatment, height=120)
 
-future_plan = st.text_area("○今後の治療計画", value="2週間の固定期間経過後、仮骨形成および炎症の沈静化を確認し、\n固定解放後のROM ex（関節可動域訓練）へと移行する。", height=100)
+# 今後の治療計画を空欄（プレースホルダーのみ）に変更
+future_plan = st.text_area("○今後の治療計画", placeholder="例：2週間の固定期間経過後、仮骨形成および炎症の沈静化を確認し、固定解放後のROM ex（関節可動域訓練）へと移行する。", height=100)
 
 reasoning = st.text_area("○臨床推論", placeholder="例：受傷機転は転倒時の手掌接地。", height=120)
 

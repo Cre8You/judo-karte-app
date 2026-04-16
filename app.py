@@ -43,7 +43,7 @@ st.divider()
 
 # --- 固定方法の入力 ---
 st.subheader("📋 Risk factor & scheduleに関する指示")
-st.write("◯安静、固定部位・方法")
+st.write("◯固定部位・方法")
 
 selected_fix_r = []
 selected_fix_l = []
@@ -51,7 +51,12 @@ selected_fix_trunk = []
 fix_extra = ""
 
 if region in ["上肢", "下肢"]:
-    fix_options = ["BE", "AE", "プライトン", "アルフェンス", "テーピング", "サポーター"]
+    # 下肢の場合のみ「松葉杖」を追加したリストを使用
+    if region == "上肢":
+        fix_options = ["BE", "AE", "プライトン", "アルフェンス", "テーピング", "サポーター"]
+    else:
+        fix_options = ["BE", "AE", "プライトン", "アルフェンス", "テーピング", "サポーター", "松葉杖"]
+        
     c_fix_r, c_fix_l = st.columns(2)
     
     with c_fix_r:
@@ -102,19 +107,16 @@ st.divider()
 st.subheader("🩺 当日の治療状況")
 symptoms = st.text_area("○症状", placeholder="例：右手関節の腫脹、熱感、運動時痛あり。")
 
-default_treatment = """残存機能促通による代償ADL習得訓練：
-健側や固定されていない関節を活用した日常生活動作の獲得を図る。
-ADL指導：
-固定部位に負担が掛からないように、更衣や身の回りの動作における注意点を指導。
-患部外筋力促通運動：
-廃用症候群を予防するため、肩関節や指関節の筋力維持運動を実施。
-松葉歩行訓練：
-前記荷重スケジュールに準じ、転倒防止と安全な移動を目的とした歩行訓練を実施。"""
-treatment = st.text_area("○実施内容", value=default_treatment, height=200)
+# 実施内容の初期値を項目名のみに修正
+default_treatment = """残存機能促通による代償ADL習得訓練
+ADL指導
+患部外筋力促通運動
+松葉歩行訓練"""
+treatment = st.text_area("○実施内容", value=default_treatment, height=120)
 
 future_plan = st.text_area("○今後の治療計画", value="2週間の固定期間経過後、仮骨形成および炎症の沈静化を確認し、\n固定解放後のROM ex（関節可動域訓練）へと移行する。", height=100)
 
-reasoning = st.text_area("○臨床推論", placeholder="例：受傷機転は転倒時の手掌接地。定型的なフォーク状変形あり。", height=120)
+reasoning = st.text_area("○臨床推論", placeholder="例：受傷機転は転倒時の手掌接地。", height=120)
 
 st.divider()
 
@@ -145,13 +147,13 @@ if st.button("🚀 カルテ生成開始", use_container_width=True):
 【重要：レイアウトと文章の指示】
 ・強調記号（アスタリスクなど）やカッコ【】は、見出しを含め一切使用しないでください。
 ・視覚的な見やすさを最優先し、各見出しの直後や、文章の区切りで積極的に「改行」を入れてください。
-・「◯安静、固定部位・方法」「◯固定、または荷重スケジュール」「部位：」「メニュー：」の項目は、AIによる補足説明を追加せず、入力されたデータをそのまま簡潔に出力してください。
+・「◯固定部位・方法」「◯固定、または荷重スケジュール」「部位：」「メニュー：」の項目は、AIによる補足説明を追加せず、入力されたデータをそのまま簡潔に出力してください。
 
 【患者データ】
 ・疾患分類：{category}
 ・部位：{region}
 ・傷病名：{diagnosis}
-・安静、固定部位・方法：{fix_summary}
+・固定部位・方法：{fix_summary}
 ・固定、または荷重スケジュール：{schedule}
 ・職業、趣味、家事活動など：{social_bg}
 ・症状：{symptoms}
@@ -164,7 +166,7 @@ if st.button("🚀 カルテ生成開始", use_container_width=True):
 
 【出力フォーマット】（この構成と見出しを維持し、指定箇所で改行してください）
 ◆Risk factor & scheduleに関する指示
-◯安静、固定部位・方法
+◯固定部位・方法
 （ここに内容を簡潔に記載。改行して開始）
 
 ◯固定、または荷重スケジュール
@@ -179,7 +181,7 @@ if st.button("🚀 カルテ生成開始", use_container_width=True):
 （ここに内容を記載。改行して開始）
 
 ○実施内容:
-（ここに内容を記載。項目ごとに改行して開始）
+（ここに箇条書きをそのまま記載。項目ごとに改行して開始）
 
 ○今後の治療計画:
 （ここに内容を記載。改行して開始）
@@ -188,12 +190,12 @@ if st.button("🚀 カルテ生成開始", use_container_width=True):
 （ここに内容を記載。改行して開始）
 
 ◆消炎鎮痛及び物理療法
-部位： （ここに内容を記載。改行せず同じ行に簡潔に）
-メニュー： （ここに内容を記載。改行せず同じ行に簡潔に）
+部位： （改行せず同じ行に）
+メニュー： （改行せず同じ行に）
 
-次回： （ここに内容を記載。改行せず同じ行に）
+次回： （改行せず同じ行に）
 """
-        with st.spinner("AIが読みやすいレイアウトでカルテを生成中..."):
+        with st.spinner("AIがカルテを生成中..."):
             try:
                 genai.configure(api_key=gemini_key)
                 model = genai.GenerativeModel(selected_model)

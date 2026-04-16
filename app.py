@@ -54,8 +54,10 @@ if region in ["上肢", "下肢"]:
     # 下肢の場合のみ「松葉杖」を追加したリストを使用
     if region == "上肢":
         fix_options = ["BE", "AE", "プライトン", "アルフェンス", "テーピング", "サポーター"]
+        extra_placeholder = "例：デゾー固定、バディテーピングなど"
     else:
         fix_options = ["BE", "AE", "プライトン", "アルフェンス", "テーピング", "サポーター", "松葉杖"]
+        extra_placeholder = "例：U字シーネ、厚紙副子など"
         
     c_fix_r, c_fix_l = st.columns(2)
     
@@ -70,6 +72,10 @@ if region in ["上肢", "下肢"]:
         for opt in fix_options:
             if st.checkbox(f"左：{opt}", key=f"fix_l_{opt}"):
                 selected_fix_l.append(opt)
+                
+    # 上肢・下肢用のその他テキストボックスを追加
+    fix_extra = st.text_input("その他（例外・詳細）", placeholder=extra_placeholder)
+
 else: # 体幹
     fix_options_trunk = ["クラビクルバンド", "コルセット", "サポーター"]
     c_fix_t1, c_fix_t2 = st.columns(2)
@@ -87,6 +93,7 @@ fix_summary = ""
 if region in ["上肢", "下肢"]:
     if selected_fix_r: fix_summary += f"右：{', '.join(selected_fix_r)} "
     if selected_fix_l: fix_summary += f"左：{', '.join(selected_fix_l)} "
+    if fix_extra: fix_summary += f"({fix_extra})"
 else:
     if selected_fix_trunk: fix_summary += f"{', '.join(selected_fix_trunk)} "
     if fix_extra: fix_summary += f"({fix_extra})"
@@ -107,14 +114,13 @@ st.divider()
 st.subheader("🩺 当日の治療状況")
 symptoms = st.text_area("○症状", placeholder="例：右手関節の腫脹、熱感、運動時痛あり。")
 
-# 実施内容の初期値を項目名のみに修正
+# 実施内容の初期値
 default_treatment = """残存機能促通による代償ADL習得訓練
 ADL指導
 患部外筋力促通運動
 松葉歩行訓練"""
 treatment = st.text_area("○実施内容", value=default_treatment, height=120)
 
-# 今後の治療計画を空欄（プレースホルダーのみ）に変更
 future_plan = st.text_area("○今後の治療計画", placeholder="例：2週間の固定期間経過後、仮骨形成および炎症の沈静化を確認し、固定解放後のROM ex（関節可動域訓練）へと移行する。", height=100)
 
 reasoning = st.text_area("○臨床推論", placeholder="例：受傷機転は転倒時の手掌接地。", height=120)

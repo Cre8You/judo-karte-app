@@ -300,14 +300,14 @@ def render_plan_mode(gemini_key: str, selected_model: str) -> None:
         joint = st.selectbox("対象関節・部位", list(JOINT_CONFIG.keys()), key="plan_joint")
     with base_col2:
         side = st.selectbox("左右", SIDE_OPTIONS, key="plan_side")
-        disease_option = st.selectbox("傷病名", JOINT_CONFIG[joint]["diseases"], key=f"plan_disease_{joint}")
+        disease_name = st.text_input(
+            "傷病名",
+            placeholder="例：右膝内側側副靱帯損傷",
+            key="plan_disease_name",
+        )
     with base_col3:
         onset_date = st.date_input("発症日（受傷日）", datetime.date.today(), key="plan_onset_date")
         rehab_start_date = st.date_input("リハ開始日", datetime.date.today(), key="plan_rehab_start_date")
-
-    disease_name = disease_option
-    if disease_option == "その他":
-        disease_name = st.text_input("傷病名を入力", placeholder="正式な傷病名を入力してください", key=f"plan_custom_disease_{joint}")
 
     st.divider()
     st.subheader("🔥 疼痛評価")

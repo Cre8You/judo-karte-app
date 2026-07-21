@@ -1,160 +1,252 @@
-import streamlit as st
-import google.generativeai as genai
 import datetime
+from typing import Dict, List
 
-# ページ設定
+import google.generativeai as genai
+import streamlit as st
+
+from evaluation_config import JOINT_CONFIG, NRS_OPTIONS, ROM_FACTORS, SIDE_OPTIONS, SPECIAL_TEST_RESULTS
+
 st.set_page_config(page_title="柔道整復師カルテAIアシスタント", layout="wide")
 
-st.title("🦴 柔道整復師カルテAIアシスタント")
+MODEL_OPTIONS = {
+    "gemini-flash-latest（1日1500回・基本）": "gemini-flash-latest",
+    "gemini-3.0-flash（最新鋭！）": "gemini-3.0-flash",
+    "gemini-2.5-flash（高性能！）": "gemini-2.5-flash",
+    "gemini-1.5-pro（推論特化）": "gemini-1.5-pro",
+}
 
-# --- サイドバー ---
-with st.sidebar:
-    st.header("🔑 AI設定")
-    gemini_key = st.text_input("Gemini APIキーを入力", type="password")
-    
-    MODEL_OPTIONS = {
-        "gemini-flash-latest（1日1500回・基本）": "gemini-flash-latest",
-        "gemini-3.0-flash（最新鋭！）": "gemini-3.0-flash",
-        "gemini-2.5-flash（高性能！）": "gemini-2.5-flash",
-        "gemini-1.5-pro（推論特化）": "gemini-1.5-pro"
-    }
-    
+
+def set_exclusive_checkbox(selected_key: str, other_key: str) -> None:
+    if st.session_state.get(selected_key, False):
+        st.session_state[other_key] = False
+
+
+def exclusive_checkbox_pair(item_label: str, negative_label: str, positive_label: str, key_prefix: str) -> str:
+    label_col, negative_col, positive_col = st.columns([2.2, 1.2, 1.2])
+    negative_key = f"{key_prefix}_negative"
+    positive_key = f"{key_prefix}_positive"
+    with label_col:
+        st.write(item_label)
+    with negative_col:
+        negative_checked = st.checkbox(
+            negative_label,
+            key=negative_key,
+            on_change=set_exclusive_checkbox,
+            args=(negative_key, positive_key),
+        )
+    with positive_col:
+        positive_checked = st.checkbox(
+            positive_label,
+            key=positive_key,
+            on_change=set_exclusive_checkbox,
+            args=(positive_key, negative_key),
+        )
+    if positive_checked:
+        return positive_label
+    if negative_checked:
+        return negative_label
+    return "未評価"
+
+
+def render_rom_assessment(joint: str, motions: List[str]) -> Dict[str, Dict[str, object]]:
+    results: Dict[str, Dict[str, object]] = {}
+    with st.expander("📐 ROM評価", expanded=True):
+        st.caption("『制限なし』『制限あり』のどちらかを選択します。両方未選択は未評価です。")
+        for index, motion in enumerate(motions):
+            status = exclusive_checkbox_pair(motion, "制限なし", "制限あり", f"plan_{joint}_rom_{index}")
+            factors: List[str] = []
+            if status == "制限あり":
+                factors = st.multiselect(
+                    f"{motion}の制限因子（複数選択可）",
+                    ROM_FACTORS,
+                    key=f"plan_{joint}_rom_factors_{index}",
+                )
+            results[motion] = {"status": status, "factors": factors}
+            st.divider()
+    return results
+
+
+def render_binary_assessment(title: str, icon: str, joint: str, items: List[str], negative_label: str, positive_label: str, key_name: str) -> Dict[str, str]:
+    results: Dict[str, str] = {}
+    with st.expander(f"{icon} {title}", expanded=True):
+        st.caption("両方未選択の場合は未評価です。")
+        for index, item in enumerate(items):
+            results[item] = exclusive_checkbox_pair(
+                item,
+                negative_label,
+                positive_label,
+                f"plan_{joint}_{key_name}_{index}",
+            )
+            st.divider()
+    return results
+
+
+def render_special_tests(joint: str, tests: List[str]) -> Dict[str, Dict[str, str]]:
+    results: Dict[str, Dict[str, str]] = {}
+    with st.expander("🧪 スペシャルテスト", expanded=False):
+        st.caption("各テストの結果を選び、陽性・判定困難の場合は所見を補足できます。")
+        for index, test_name in enumerate(tests):
+            result_col, note_col = st.columns([1.4, 2.6])
+            with result_col:
+                result = st.selectbox(
+                    test_name,
+                    SPECIAL_TEST_RESULTS,
+                    key=f"plan_{joint}_special_result_{index}",
+                )
+            with note_col:
+                note = ""
+                if result in ["陽性", "判定困難"]:
+                    note = st.text_input(
+                        f"{test_name}の所見（任意）",
+                        placeholder="例：疼痛誘発、不安感、弛緩性、クリックなど",
+                        key=f"plan_{joint}_special_note_{index}",
+                    )
+            results[test_name] = {"result": result, "note": note}
+            st.divider()
+    return results
+
+
+def format_rom_results(results: Dict[str, Dict[str, object]]) -> str:
+    lines = []
+    for motion, data in results.items():
+        status = str(data["status"])
+        factors = data.get("factors", [])
+        if status == "制限あり" and factors:
+            lines.append(f"・{motion}：制限あり（制限因子：{', '.join(factors)}）")
+        else:
+            lines.append(f"・{motion}：{status}")
+    return "\n".join(lines)
+
+
+def format_binary_results(results: Dict[str, str]) -> str:
+    return "\n".join(f"・{item}：{status}" for item, status in results.items())
+
+
+def format_special_results(results: Dict[str, Dict[str, str]]) -> str:
+    lines = []
+    for test_name, data in results.items():
+        suffix = f"（{data['note']}）" if data["note"] else ""
+        lines.append(f"・{test_name}：{data['result']}{suffix}")
+    return "\n".join(lines)
+
+
+def generate_with_gemini(gemini_key: str, selected_model: str, prompt: str, spinner_text: str) -> None:
+    with st.spinner(spinner_text):
+        try:
+            genai.configure(api_key=gemini_key)
+            model = genai.GenerativeModel(selected_model)
+            response = model.generate_content(prompt)
+            st.subheader("✨ 出力結果")
+            st.text_area("Copy & Paste", response.text, height=700)
+        except Exception as exc:
+            st.error(f"エラーが発生しました: {exc}")
+
+
+def render_new_patient_mode(gemini_key: str, selected_model: str) -> None:
+    with st.sidebar:
+        st.divider()
+        st.header("📋 分類設定")
+        category = st.selectbox("【疾患分類】を選択", ["骨折", "捻挫", "脱臼", "慢性疾患"])
+        region = st.selectbox("【部位】を選択", ["上肢", "下肢", "体幹"])
+
+    st.header(f"📝 新患カルテ入力（{category} - {region}）")
+    c_info1, c_info2 = st.columns(2)
+    with c_info1:
+        diagnosis = st.text_input("病名（傷病名）", placeholder="例：右橈骨遠位端骨折", key="new_diagnosis")
+    with c_info2:
+        st.date_input("発症日（受傷日）", datetime.date.today(), key="new_onset_date")
+
     st.divider()
-    st.header("🧠 モデル設定")
-    selected_label = st.selectbox("使用するAIモデル", list(MODEL_OPTIONS.keys()), index=0)
-    selected_model = MODEL_OPTIONS[selected_label]
-            
-    st.divider()
-    st.header("📋 分類設定")
-    category = st.selectbox("【疾患分類】を選択", ["骨折", "捻挫", "脱臼", "慢性疾患"])
-    region = st.selectbox("【部位】を選択", ["上肢", "下肢", "体幹"])
+    st.subheader("📋 Risk factor & scheduleに関する指示")
+    st.write("◯固定部位・方法")
+    selected_fix_r: List[str] = []
+    selected_fix_l: List[str] = []
+    selected_fix_trunk: List[str] = []
+    fix_extra = ""
 
-# --- メインエリア：評価入力 ---
-st.header(f"📝 新患カルテ入力（{category} - {region}）")
-
-# 基本情報
-c_info1, c_info2 = st.columns(2)
-with c_info1:
-    diagnosis = st.text_input("病名（傷病名）", placeholder="例：右橈骨遠位端骨折")
-with c_info2:
-    onset_date = st.date_input("発症日（受傷日）", datetime.date.today())
-
-st.divider()
-
-# --- 固定方法の入力 ---
-st.subheader("📋 Risk factor & scheduleに関する指示")
-st.write("◯固定部位・方法")
-
-selected_fix_r = []
-selected_fix_l = []
-selected_fix_trunk = []
-fix_extra = ""
-
-if region in ["上肢", "下肢"]:
-    # 下肢の場合のみ「松葉杖」を追加したリストを使用
-    if region == "上肢":
-        fix_options = ["BE", "AE", "プライトン", "アルフェンス", "テーピング", "サポーター"]
-        extra_placeholder = "例：デゾー固定、バディテーピングなど"
+    if region in ["上肢", "下肢"]:
+        if region == "上肢":
+            fix_options = ["BE", "AE", "プライトン", "アルフェンス", "テーピング", "サポーター"]
+            extra_placeholder = "例：デゾー固定、バディテーピングなど"
+        else:
+            fix_options = ["BE", "AE", "プライトン", "アルフェンス", "テーピング", "サポーター", "松葉杖"]
+            extra_placeholder = "例：U字シーネ、厚紙副子など"
+        c_fix_r, c_fix_l = st.columns(2)
+        with c_fix_r:
+            st.write("『右』")
+            for option in fix_options:
+                if st.checkbox(f"右：{option}", key=f"new_fix_r_{option}"):
+                    selected_fix_r.append(option)
+        with c_fix_l:
+            st.write("『左』")
+            for option in fix_options:
+                if st.checkbox(f"左：{option}", key=f"new_fix_l_{option}"):
+                    selected_fix_l.append(option)
+        fix_extra = st.text_input("その他（例外・詳細）", placeholder=extra_placeholder, key="new_fix_extra")
     else:
-        fix_options = ["BE", "AE", "プライトン", "アルフェンス", "テーピング", "サポーター", "松葉杖"]
-        extra_placeholder = "例：U字シーネ、厚紙副子など"
-        
-    c_fix_r, c_fix_l = st.columns(2)
-    
-    with c_fix_r:
-        st.write("『右』")
-        for opt in fix_options:
-            if st.checkbox(f"右：{opt}", key=f"fix_r_{opt}"):
-                selected_fix_r.append(opt)
-    
-    with c_fix_l:
-        st.write("『左』")
-        for opt in fix_options:
-            if st.checkbox(f"左：{opt}", key=f"fix_l_{opt}"):
-                selected_fix_l.append(opt)
-                
-    # 上肢・下肢用のその他テキストボックスを追加
-    fix_extra = st.text_input("その他（例外・詳細）", placeholder=extra_placeholder)
+        c_fix_t1, c_fix_t2 = st.columns(2)
+        with c_fix_t1:
+            for option in ["クラビクルバンド", "コルセット", "サポーター"]:
+                if st.checkbox(option, key=f"new_fix_t_{option}"):
+                    selected_fix_trunk.append(option)
+        with c_fix_t2:
+            fix_extra = st.text_input("その他（例外・詳細）", placeholder="例：鎖骨固定帯の種類など", key="new_fix_extra_trunk")
 
-else: # 体幹
-    fix_options_trunk = ["クラビクルバンド", "コルセット", "サポーター"]
-    c_fix_t1, c_fix_t2 = st.columns(2)
-    
-    with c_fix_t1:
-        for opt in fix_options_trunk:
-            if st.checkbox(opt, key=f"fix_t_{opt}"):
-                selected_fix_trunk.append(opt)
-    
-    with c_fix_t2:
-        fix_extra = st.text_input("その他（例外・詳細）", placeholder="例：鎖骨固定帯の種類など")
+    fix_summary = ""
+    if region in ["上肢", "下肢"]:
+        if selected_fix_r:
+            fix_summary += f"右：{', '.join(selected_fix_r)} "
+        if selected_fix_l:
+            fix_summary += f"左：{', '.join(selected_fix_l)} "
+        if fix_extra:
+            fix_summary += f"({fix_extra})"
+    else:
+        if selected_fix_trunk:
+            fix_summary += f"{', '.join(selected_fix_trunk)} "
+        if fix_extra:
+            fix_summary += f"({fix_extra})"
+    if not fix_summary:
+        fix_summary = "特記なし"
 
-# 固定方法の文字列作成
-fix_summary = ""
-if region in ["上肢", "下肢"]:
-    if selected_fix_r: fix_summary += f"右：{', '.join(selected_fix_r)} "
-    if selected_fix_l: fix_summary += f"左：{', '.join(selected_fix_l)} "
-    if fix_extra: fix_summary += f"({fix_extra})"
-else:
-    if selected_fix_trunk: fix_summary += f"{', '.join(selected_fix_trunk)} "
-    if fix_extra: fix_summary += f"({fix_extra})"
-
-if not fix_summary:
-    fix_summary = "特記なし"
-
-# スケジュール
-schedule = st.text_input("◯固定、または荷重スケジュール", value="2週間の継続固定を予定")
-
-st.divider()
-
-st.subheader("🏠 社会的背景(FIM別紙計画書内)")
-social_bg = st.text_input("職業、趣味、家事活動など", placeholder="例：事務職（PC作業メイン）")
-
-st.divider()
-
-st.subheader("🩺 当日の治療状況")
-symptoms = st.text_area("○症状", placeholder="例：右手関節の腫脹、熱感、運動時痛あり。")
-
-# 実施内容の初期値
-default_treatment = """残存機能促通による代償ADL習得訓練
+    schedule = st.text_input("◯固定、または荷重スケジュール", value="2週間の継続固定を予定", key="new_schedule")
+    st.divider()
+    st.subheader("🏠 社会的背景(FIM別紙計画書内)")
+    social_bg = st.text_input("職業、趣味、家事活動など", placeholder="例：事務職（PC作業メイン）", key="new_social_bg")
+    st.divider()
+    st.subheader("🩺 当日の治療状況")
+    symptoms = st.text_area("○症状", placeholder="例：右手関節の腫脹、熱感、運動時痛あり。", key="new_symptoms")
+    default_treatment = """残存機能促通による代償ADL習得訓練
 ADL指導
 患部外筋力促通運動
 松葉歩行訓練"""
-treatment = st.text_area("○実施内容", value=default_treatment, height=120)
+    treatment = st.text_area("○実施内容", value=default_treatment, height=120, key="new_treatment")
+    future_plan = st.text_area("○今後の治療計画", placeholder="例：固定期間経過後、炎症の沈静化を確認しROM exへ移行する。", height=100, key="new_future_plan")
+    reasoning = st.text_area("○臨床推論", placeholder="例：受傷機転は転倒時の手掌接地。", height=120, key="new_reasoning")
+    st.divider()
+    st.subheader("⚡ 消炎鎮痛及び物理療法")
+    c_pt1, c_pt2 = st.columns(2)
+    with c_pt1:
+        pt_region = st.text_input("部位", placeholder="例：右手関節周囲", key="new_pt_region")
+    with c_pt2:
+        pt_menu = st.text_input("メニュー", placeholder="例：アイシング", key="new_pt_menu")
+    st.divider()
+    next_visit = st.text_input("📅 次回", placeholder="例：明日、固定の適合状態確認および症状経過観察のため来院予定。", key="new_next_visit")
+    st.divider()
 
-future_plan = st.text_area("○今後の治療計画", placeholder="例：2週間の固定期間経過後、仮骨形成および炎症の沈静化を確認し、固定解放後のROM ex（関節可動域訓練）へと移行する。", height=100)
-
-reasoning = st.text_area("○臨床推論", placeholder="例：受傷機転は転倒時の手掌接地。", height=120)
-
-st.divider()
-
-st.subheader("⚡ 消炎鎮痛及び物理療法")
-c_pt1, c_pt2 = st.columns(2)
-with c_pt1:
-    pt_region = st.text_input("部位", placeholder="例：右手関節周囲")
-with c_pt2:
-    pt_menu = st.text_input("メニュー", placeholder="例：アイシング")
-
-st.divider()
-
-next_visit = st.text_input("📅 次回", placeholder="例：明日、固定の適合状態確認および症状経過観察のため来院予定。")
-
-st.divider()
-
-# 実行ボタン
-if st.button("🚀 カルテ生成開始", use_container_width=True):
-    if not gemini_key:
-        st.error("APIキーを入力してください")
-    elif not diagnosis:
-        st.warning("病名を入力してください")
-    else:
-        prompt = f"""
+    if st.button("🚀 カルテ生成開始", use_container_width=True, key="new_generate"):
+        if not gemini_key:
+            st.error("APIキーを入力してください")
+        elif not diagnosis:
+            st.warning("病名を入力してください")
+        else:
+            prompt = f"""
 あなたは接骨院に勤務する優秀な柔道整復師です。
-以下の入力データを元に、指定された【出力フォーマット】に沿って新患カルテを作成してください。
+以下の入力データを元に、指定された出力フォーマットに沿って新患カルテを作成してください。
 
-【重要：レイアウトと文章の指示】
-・強調記号（アスタリスクなど）やカッコ【】は、見出しを含め一切使用しないでください。
-・視覚的な見やすさを最優先し、各見出しの直後や、文章の区切りで積極的に「改行」を入れてください。
-・「◯固定部位・方法」「◯固定、または荷重スケジュール」「部位：」「メニュー：」の項目は、AIによる補足説明を追加せず、入力されたデータをそのまま簡潔に出力してください。
+【重要】
+・強調記号やカッコ【】は、見出しを含め一切使用しないでください。
+・各見出しの直後や文章の区切りで積極的に改行してください。
+・固定方法、スケジュール、物理療法は入力内容をそのまま簡潔に出力してください。
 
 【患者データ】
 ・疾患分類：{category}
@@ -171,43 +263,179 @@ if st.button("🚀 カルテ生成開始", use_container_width=True):
 ・物理療法メニュー：{pt_menu}
 ・次回：{next_visit}
 
-【出力フォーマット】（この構成と見出しを維持し、指定箇所で改行してください）
+【出力フォーマット】
 ◆Risk factor & scheduleに関する指示
 ◯固定部位・方法
-（ここに内容を簡潔に記載。改行して開始）
 
 ◯固定、または荷重スケジュール
-（ここに内容を簡潔に記載。改行して開始）
 
 ◆社会的背景(FIM別紙計画書内)
 職業、趣味、家事活動など
-（ここに内容を記載。改行して開始）
 
 ◆当日の治療状況
 ○症状:
-（ここに内容を記載。改行して開始）
 
 ○実施内容:
-（ここに箇条書きをそのまま記載。項目ごとに改行して開始）
 
 ○今後の治療計画:
-（ここに内容を記載。改行して開始）
 
 ○臨床推論:
-（ここに内容を記載。改行して開始）
 
 ◆消炎鎮痛及び物理療法
-部位： （改行せず同じ行に）
-メニュー： （改行せず同じ行に）
+部位：
+メニュー：
 
-次回： （改行せず同じ行に）
+次回：
 """
-        with st.spinner("AIがカルテを生成中..."):
-            try:
-                genai.configure(api_key=gemini_key)
-                model = genai.GenerativeModel(selected_model)
-                response = model.generate_content(prompt)
-                st.subheader("✨ 出力結果")
-                st.text_area("Copy & Paste", response.text, height=650)
-            except Exception as e:
-                st.error(f"エラーが発生しました: {e}")
+            generate_with_gemini(gemini_key, selected_model, prompt, "AIがカルテを生成中...")
+
+
+def render_plan_mode(gemini_key: str, selected_model: str) -> None:
+    st.header("📑 リハビリテーション計画書入力")
+    st.info("柔道整復師による評価を入力し、計画書用の文章を生成します。")
+
+    base_col1, base_col2, base_col3 = st.columns(3)
+    with base_col1:
+        patient_id = st.text_input("患者ID", placeholder="例：000000", key="plan_patient_id")
+        joint = st.selectbox("対象関節・部位", list(JOINT_CONFIG.keys()), key="plan_joint")
+    with base_col2:
+        side = st.selectbox("左右", SIDE_OPTIONS, key="plan_side")
+        disease_option = st.selectbox("傷病名", JOINT_CONFIG[joint]["diseases"], key=f"plan_disease_{joint}")
+    with base_col3:
+        onset_date = st.date_input("発症日（受傷日）", datetime.date.today(), key="plan_onset_date")
+        rehab_start_date = st.date_input("リハ開始日", datetime.date.today(), key="plan_rehab_start_date")
+
+    disease_name = disease_option
+    if disease_option == "その他":
+        disease_name = st.text_input("傷病名を入力", placeholder="正式な傷病名を入力してください", key=f"plan_custom_disease_{joint}")
+
+    st.divider()
+    st.subheader("🔥 疼痛評価")
+    pain_col1, pain_col2, pain_col3 = st.columns(3)
+    with pain_col1:
+        rest_nrs = st.selectbox("安静時NRS", NRS_OPTIONS, key="plan_rest_nrs")
+    with pain_col2:
+        movement_nrs = st.selectbox("動作時NRS", NRS_OPTIONS, key="plan_movement_nrs")
+    with pain_col3:
+        night_nrs = st.selectbox("夜間痛NRS", NRS_OPTIONS, key="plan_night_nrs")
+    pain_location = st.text_input("疼痛部位", placeholder="例：右膝関節内側、膝蓋骨周囲", key="plan_pain_location")
+    pain_trigger = st.text_input("疼痛を誘発する動作", placeholder="例：階段降段、立ち上がり、歩行開始時", key="plan_pain_trigger")
+    pain_quality = st.text_input("疼痛の性質", placeholder="例：鋭い痛み、鈍痛、灼熱感", key="plan_pain_quality")
+
+    config = JOINT_CONFIG[joint]
+    rom_results = render_rom_assessment(joint, config["rom"])
+    mmt_results = render_binary_assessment("MMT評価", "💪", joint, config["mmt"], "筋力低下なし", "筋力低下あり", "mmt")
+    sensory_results = render_binary_assessment("感覚検査", "🖐️", joint, config["sensory"], "感覚異常なし", "感覚異常あり", "sensory")
+    special_results = render_special_tests(joint, config["special_tests"])
+
+    st.divider()
+    st.subheader("📝 計画書作成のための補足情報")
+    context_col1, context_col2 = st.columns(2)
+    with context_col1:
+        participation = st.text_area("生活上の困りごと・参加制限（任意）", placeholder="例：通勤時の歩行、仕事中の立位、家事動作に支障がある", height=100, key="plan_participation")
+    with context_col2:
+        clinical_note = st.text_area("柔道整復師所見・補足（任意）", placeholder="例：腫脹、圧痛、歩容、固定状況、治癒経過など", height=100, key="plan_clinical_note")
+
+    st.divider()
+    if st.button("🚀 計画書生成開始", use_container_width=True, key="plan_generate"):
+        if not gemini_key:
+            st.error("APIキーを入力してください")
+        elif not patient_id:
+            st.warning("患者IDを入力してください")
+        elif not disease_name:
+            st.warning("傷病名を入力してください")
+        elif rehab_start_date < onset_date:
+            st.warning("リハ開始日が発症日より前です。日付を確認してください")
+        else:
+            pain_summary = f"""
+・安静時NRS：{rest_nrs}
+・動作時NRS：{movement_nrs}
+・夜間痛NRS：{night_nrs}
+・疼痛部位：{pain_location or '未入力'}
+・疼痛を誘発する動作：{pain_trigger or '未入力'}
+・疼痛の性質：{pain_quality or '未入力'}
+""".strip()
+            prompt = f"""
+あなたは接骨院に勤務する経験豊富な柔道整復師です。
+以下の評価データから、リハビリテーション計画書に使用する文章を作成してください。
+
+【厳守事項】
+・入力されていない情報を事実として創作しないでください。
+・未評価、未実施、未入力と、異常なし、陰性を明確に区別してください。
+・疾患名だけから検査結果や症状を推測して断定しないでください。
+・Markdownのアスタリスクは使用せず、見出しは【】を使用してください。
+・疼痛、ROM、筋力、感覚、スペシャルテストの入力結果を治療方針に反映してください。
+
+【基本情報】
+・患者ID：{patient_id}
+・対象部位：{side} {joint}
+・傷病名：{disease_name}
+・発症日：{onset_date.strftime('%Y年%m月%d日')}
+・リハ開始日：{rehab_start_date.strftime('%Y年%m月%d日')}
+
+【疼痛評価】
+{pain_summary}
+
+【ROM評価】
+{format_rom_results(rom_results)}
+
+【MMT評価】
+{format_binary_results(mmt_results)}
+
+【感覚検査】
+{format_binary_results(sensory_results)}
+
+【スペシャルテスト】
+{format_special_results(special_results)}
+
+【生活上の困りごと・参加制限】
+{participation or '未入力'}
+
+【柔道整復師所見・補足】
+{clinical_note or '未入力'}
+
+【出力形式】
+【評価要約】
+・疼痛
+・可動域
+・筋力
+・感覚
+・スペシャルテスト
+
+【計画書用】
+・疼痛について（20文字以内）
+・筋力について（20文字以内）
+・感覚異常について（20文字以内）
+・可動域について（30文字以内。制限因子がある場合は反映）
+・短期目標（100文字以内）
+・長期目標（50文字以内）
+・治療方針（120文字以内）
+・治療内容（箇条書きで最大6行）
+・参加制限に対する具体的な対応方針（200文字以内、です・ます調）
+・機能障害に対する具体的な対応方針（200文字以内、です・ます調）
+
+すべて未評価の項目は、異常なしとせず「評価情報なし」と記載してください。
+"""
+            generate_with_gemini(gemini_key, selected_model, prompt, "AIが計画書を生成中...")
+
+
+def main() -> None:
+    st.title("🦴 柔道整復師カルテAIアシスタント")
+    with st.sidebar:
+        st.header("🧭 作成モード")
+        mode = st.radio("使用する機能を選択", ["① 新患カルテ作成", "② リハビリテーション計画書作成"])
+        st.divider()
+        st.header("🔑 AI設定")
+        gemini_key = st.text_input("Gemini APIキーを入力", type="password")
+        st.header("🧠 モデル設定")
+        selected_label = st.selectbox("使用するAIモデル", list(MODEL_OPTIONS.keys()), index=0)
+        selected_model = MODEL_OPTIONS[selected_label]
+
+    if mode == "① 新患カルテ作成":
+        render_new_patient_mode(gemini_key, selected_model)
+    else:
+        render_plan_mode(gemini_key, selected_model)
+
+
+if __name__ == "__main__":
+    main()

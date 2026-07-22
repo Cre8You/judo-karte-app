@@ -5,6 +5,7 @@ import google.generativeai as genai
 import streamlit as st
 
 from evaluation_config import JOINT_CONFIG, NRS_OPTIONS, ROM_FACTORS, SIDE_OPTIONS, SPECIAL_TEST_RESULTS
+from plan_validation import validate_plan_inputs
 
 st.set_page_config(page_title="柔道整復師カルテAIアシスタント", layout="wide")
 
@@ -338,14 +339,16 @@ def render_plan_mode(gemini_key: str, selected_model: str) -> None:
 
     st.divider()
     if st.button("🚀 計画書生成開始", use_container_width=True, key="plan_generate"):
+        validation_warning, patient_id_for_prompt = validate_plan_inputs(
+            patient_id,
+            disease_name,
+            onset_date,
+            rehab_start_date,
+        )
         if not gemini_key:
             st.error("APIキーを入力してください")
-        elif not patient_id:
-            st.warning("患者IDを入力してください")
-        elif not disease_name:
-            st.warning("傷病名を入力してください")
-        elif rehab_start_date < onset_date:
-            st.warning("リハ開始日が発症日より前です。日付を確認してください")
+        elif validation_warning:
+            st.warning(validation_warning)
         else:
             pain_summary = f"""
 ・安静時NRS：{rest_nrs}
@@ -367,7 +370,7 @@ def render_plan_mode(gemini_key: str, selected_model: str) -> None:
 ・疼痛、ROM、筋力、感覚、スペシャルテストの入力結果を治療方針に反映してください。
 
 【基本情報】
-・患者ID：{patient_id}
+・患者ID：{patient_id_for_prompt}
 ・対象部位：{side} {joint}
 ・傷病名：{disease_name}
 ・発症日：{onset_date.strftime('%Y年%m月%d日')}

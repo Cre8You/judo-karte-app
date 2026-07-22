@@ -5,6 +5,7 @@ import google.generativeai as genai
 import streamlit as st
 
 from evaluation_config import JOINT_CONFIG, NRS_OPTIONS, ROM_FACTORS, SIDE_OPTIONS, SPECIAL_TEST_RESULTS
+from plan_prompt import build_rehabilitation_plan_prompt
 from plan_validation import validate_plan_inputs
 
 st.set_page_config(page_title="柔道整復師カルテAIアシスタント", layout="wide")
@@ -350,75 +351,26 @@ def render_plan_mode(gemini_key: str, selected_model: str) -> None:
         elif validation_warning:
             st.warning(validation_warning)
         else:
-            pain_summary = f"""
-・安静時NRS：{rest_nrs}
-・動作時NRS：{movement_nrs}
-・夜間痛NRS：{night_nrs}
-・疼痛部位：{pain_location or '未入力'}
-・疼痛を誘発する動作：{pain_trigger or '未入力'}
-・疼痛の性質：{pain_quality or '未入力'}
-""".strip()
-            prompt = f"""
-あなたは接骨院に勤務する経験豊富な柔道整復師です。
-以下の評価データから、リハビリテーション計画書に使用する文章を作成してください。
-
-【厳守事項】
-・入力されていない情報を事実として創作しないでください。
-・未評価、未実施、未入力と、異常なし、陰性を明確に区別してください。
-・疾患名だけから検査結果や症状を推測して断定しないでください。
-・Markdownのアスタリスクは使用せず、見出しは【】を使用してください。
-・疼痛、ROM、筋力、感覚、スペシャルテストの入力結果を治療方針に反映してください。
-
-【基本情報】
-・患者ID：{patient_id_for_prompt}
-・対象部位：{side} {joint}
-・傷病名：{disease_name}
-・発症日：{onset_date.strftime('%Y年%m月%d日')}
-・リハ開始日：{rehab_start_date.strftime('%Y年%m月%d日')}
-
-【疼痛評価】
-{pain_summary}
-
-【ROM評価】
-{format_rom_results(rom_results)}
-
-【MMT評価】
-{format_binary_results(mmt_results)}
-
-【感覚検査】
-{format_binary_results(sensory_results)}
-
-【スペシャルテスト】
-{format_special_results(special_results)}
-
-【生活上の困りごと・参加制限】
-{participation or '未入力'}
-
-【柔道整復師所見・補足】
-{clinical_note or '未入力'}
-
-【出力形式】
-【評価要約】
-・疼痛
-・可動域
-・筋力
-・感覚
-・スペシャルテスト
-
-【計画書用】
-・疼痛について（20文字以内）
-・筋力について（20文字以内）
-・感覚異常について（20文字以内）
-・可動域について（30文字以内。制限因子がある場合は反映）
-・短期目標（100文字以内）
-・長期目標（50文字以内）
-・治療方針（120文字以内）
-・治療内容（箇条書きで最大6行）
-・参加制限に対する具体的な対応方針（200文字以内、です・ます調）
-・機能障害に対する具体的な対応方針（200文字以内、です・ます調）
-
-すべて未評価の項目は、異常なしとせず「評価情報なし」と記載してください。
-"""
+            prompt = build_rehabilitation_plan_prompt(
+                patient_id=patient_id_for_prompt,
+                joint=joint,
+                side=side,
+                disease_name=disease_name,
+                onset_date=onset_date,
+                rehab_start_date=rehab_start_date,
+                rest_nrs=rest_nrs,
+                movement_nrs=movement_nrs,
+                night_nrs=night_nrs,
+                pain_location=pain_location,
+                pain_trigger=pain_trigger,
+                pain_quality=pain_quality,
+                rom_summary=format_rom_results(rom_results),
+                mmt_summary=format_binary_results(mmt_results),
+                sensory_summary=format_binary_results(sensory_results),
+                special_summary=format_special_results(special_results),
+                participation=participation,
+                clinical_note=clinical_note,
+            )
             generate_with_gemini(gemini_key, selected_model, prompt, "AIが計画書を生成中...")
 
 

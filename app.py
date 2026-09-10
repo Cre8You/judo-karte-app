@@ -7,6 +7,7 @@ import streamlit as st
 from evaluation_config import JOINT_CONFIG, NRS_OPTIONS, ROM_FACTORS, SIDE_OPTIONS, SPECIAL_TEST_RESULTS
 from plan_prompt import build_rehabilitation_plan_prompt
 from plan_validation import validate_plan_inputs
+from gemini_errors import classify_gemini_error
 
 st.set_page_config(page_title="柔道整復師カルテAIアシスタント", layout="wide")
 
@@ -141,7 +142,7 @@ def generate_with_gemini(gemini_key: str, selected_model: str, prompt: str, spin
             st.subheader("✨ 出力結果")
             st.text_area("Copy & Paste", response.text, height=700)
         except Exception as exc:
-            st.error(f"エラーが発生しました: {exc}")
+            st.error(classify_gemini_error(exc))
 
 
 def render_new_patient_mode(gemini_key: str, selected_model: str) -> None:

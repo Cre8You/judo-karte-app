@@ -7,7 +7,7 @@ import streamlit as st
 from evaluation_config import JOINT_CONFIG, NRS_OPTIONS, ROM_FACTORS, SIDE_OPTIONS, SPECIAL_TEST_RESULTS
 from plan_prompt import build_rehabilitation_plan_prompt
 from plan_validation import validate_plan_inputs
-from gemini_errors import classify_gemini_error
+from gemini_errors import classify_gemini_error, is_rate_limit_error
 
 st.set_page_config(page_title="柔道整復師カルテAIアシスタント", layout="wide")
 
@@ -16,6 +16,17 @@ MODEL_OPTIONS = {
     "gemini-3.0-flash（最新鋭！）": "gemini-3.0-flash",
     "gemini-2.5-flash（高性能！）": "gemini-2.5-flash",
     "gemini-1.5-pro（推論特化）": "gemini-1.5-pro",
+}
+
+GEMINI_FALLBACK_MODELS = (
+    "gemini-flash-latest",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+)
+GEMINI_MODEL_NAMES = {
+    "gemini-flash-latest": "Gemini Flash",
+    "gemini-2.5-flash": "Gemini 2.5 Flash",
+    "gemini-2.5-flash-lite": "Gemini 2.5 Flash Lite",
 }
 
 
@@ -137,10 +148,26 @@ def generate_with_gemini(gemini_key: str, selected_model: str, prompt: str, spin
     with st.spinner(spinner_text):
         try:
             genai.configure(api_key=gemini_key)
-            model = genai.GenerativeModel(selected_model)
-            response = model.generate_content(prompt)
+            candidates = list(dict.fromkeys(GEMINI_FALLBACK_MODELS))
+            if selected_model in candidates:
+                candidates = candidates[candidates.index(selected_model):]
+            else:
+                candidates = [selected_model]
+            for index, model_id in enumerate(candidates):
+                try:
+                    model = genai.GenerativeModel(model_id)
+                    # Disable SDK retries: each candidate gets one request only.
+                    response = model.generate_content(prompt, request_options={"retry": None})
+                except Exception as exc:
+                    if is_rate_limit_error(exc) and index + 1 < len(candidates):
+                        continue
+                    raise
+                break
+            result_text = response.text
+            if model_id != selected_model:
+                st.info(f"上位モデルの利用上限に達したため、{GEMINI_MODEL_NAMES[model_id]}で生成しました。")
             st.subheader("✨ 出力結果")
-            st.text_area("Copy & Paste", response.text, height=700)
+            st.text_area("Copy & Paste", result_text, height=700)
         except Exception as exc:
             st.error(classify_gemini_error(exc))
 

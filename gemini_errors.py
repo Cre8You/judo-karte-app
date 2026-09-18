@@ -31,8 +31,8 @@ def _retry_seconds(exc, text):
     return None
 
 
-def classify_gemini_error(exc: Exception) -> str:
-    """Return only fixed Japanese text and an optional validated retry duration."""
+def _error_kind(exc: Exception) -> str:
+    """Prefer explicit non-quota failures over incidental words in messages."""
     text = str(exc).lower()
     code = getattr(exc, 'code', None)
     if callable(code):
@@ -46,16 +46,46 @@ def classify_gemini_error(exc: Exception) -> str:
             for detail in details
         )
     if invalid_key:
-        return 'APIキーが無効です。入力したAPIキーを確認してください。'
-    if code == 429 or 'resource_exhausted' in code_text or re.search(r'\b429\b|resource_exhausted|quota|rate.?limit', text):
-        message = 'AIの利用上限に達したか、リクエストが集中しています。'
-        seconds = _retry_seconds(exc, text)
-        return message + (f'約{seconds}秒後にもう一度お試しください。' if seconds is not None else 'しばらく時間をおいてもう一度お試しください。')
+        return 'invalid_key'
+    if code in (401, 403) or any(token in code_text + text for token in ('unauthenticated', 'permission_denied', 'unauthorized', 'forbidden')):
+        return 'auth'
     name = type(exc).__name__.lower()
     if isinstance(exc, TimeoutError) or code in (408, 504) or 'deadline_exceeded' in code_text or any(token in text + name for token in ('timeout', 'timed out', 'deadline')):
-        return 'AIの応答に時間がかかっています。時間をおいてもう一度お試しください。'
+        return 'timeout'
     if isinstance(exc, ConnectionError) or any(token in text + name for token in ('connection', 'network', 'transporterror', 'dns')):
-        return 'AIとの通信に失敗しました。インターネット接続を確認して、もう一度お試しください。'
+        return 'connection'
     if code in (404, 503) or any(token in code_text for token in ('not_found', 'unavailable')) or ('model' in text and any(token in text for token in ('not found', 'not supported', 'unavailable', 'not available'))):
+        return 'model'
+    if code == 429 or 'resource_exhausted' in code_text:
+        return 'rate_limit'
+    # A known different status must not trigger extra requests based on its text.
+    if code is not None:
+        return 'unknown'
+    if re.search(r'\b429\b|resource_exhausted|quota|rate.?limit', text):
+        return 'rate_limit'
+    return 'unknown'
+
+
+def is_rate_limit_error(exc: Exception) -> bool:
+    """Whether this failure permits advancing to the next Gemini model."""
+    return _error_kind(exc) == 'rate_limit'
+
+
+def classify_gemini_error(exc: Exception) -> str:
+    """Return only fixed Japanese text and an optional validated retry duration."""
+    kind = _error_kind(exc)
+    if kind == 'invalid_key':
+        return 'APIキーが無効です。入力したAPIキーを確認してください。'
+    if kind == 'auth':
+        return 'AIの認証に失敗しました。APIキーと利用権限を確認してください。'
+    if kind == 'rate_limit':
+        message = 'AIの利用上限に達したか、リクエストが集中しています。'
+        seconds = _retry_seconds(exc, str(exc).lower())
+        return message + (f'約{seconds}秒後にもう一度お試しください。' if seconds is not None else 'しばらく時間をおいてもう一度お試しください。')
+    if kind == 'timeout':
+        return 'AIの応答に時間がかかっています。時間をおいてもう一度お試しください。'
+    if kind == 'connection':
+        return 'AIとの通信に失敗しました。インターネット接続を確認して、もう一度お試しください。'
+    if kind == 'model':
         return '選択したAIモデルは現在利用できません。別のモデルを選ぶか、時間をおいてもう一度お試しください。'
     return 'AIによる生成に失敗しました。時間をおいてもう一度お試しください。'

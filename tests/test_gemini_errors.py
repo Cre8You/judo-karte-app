@@ -1,6 +1,7 @@
 import unittest
 from types import SimpleNamespace
 
+import gemini_errors
 from gemini_errors import classify_gemini_error
 
 
@@ -23,7 +24,7 @@ class GeminiErrorsTest(unittest.TestCase):
             (TimeoutError('SECRET_KEY'), '時間'),
             (DummyError(code=504), '時間'),
             (DummyError(code=404), 'モデル'),
-            (DummyError(code=503), 'モデル'),
+            (DummyError(code=503), '一時的'),
             (DummyError('model is not supported SECRET_KEY'), 'モデル'),
             (DummyError(), '生成に失敗'),
         ]
@@ -50,6 +51,16 @@ class GeminiErrorsTest(unittest.TestCase):
                 result = classify_gemini_error(DummyError(code=429, details=[{'retryDelay': delay}]))
                 self.assertNotIn('約', result)
                 self.assertNotIn('SECRET_KEY', result)
+
+    def test_service_unavailable_predicate_only_accepts_503(self):
+        predicate = getattr(gemini_errors, 'is_service_unavailable_error', None)
+        self.assertTrue(callable(predicate), 'Missing service-unavailable predicate')
+        for error in [DummyError(code=503), DummyError(code=lambda: 'StatusCode.UNAVAILABLE')]:
+            with self.subTest(error=error):
+                self.assertIs(predicate(error), True)
+        for error in [DummyError(code=404), DummyError(code=429), TimeoutError(), ConnectionError()]:
+            with self.subTest(error=error):
+                self.assertIs(predicate(error), False)
 
 
 if __name__ == '__main__':

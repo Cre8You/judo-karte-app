@@ -27,6 +27,27 @@ class GeminiAppTest(unittest.TestCase):
                 self.assertEqual(len(requests), 2)
                 self.assertEqual(requests[0], requests[1])
 
+    def test_both_modes_retry_503_on_the_same_model(self):
+        for mode in [0, 1]:
+            with self.subTest(mode=mode), patch('google.generativeai.configure'), \
+                    patch('google.generativeai.GenerativeModel') as model, patch('gemini_retry.sleep') as sleep:
+                model.return_value.generate_content.side_effect = [
+                    DummyError(code=503), SimpleNamespace(text='再試行成功')]
+                at = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'app.py')).run()
+                at.sidebar.radio[0].set_value(at.sidebar.radio[0].options[mode]).run()
+                at.sidebar.text_input[0].set_value('DUMMY_API_KEY')
+                at.text_input(key='new_diagnosis' if mode == 0 else 'plan_disease_name').set_value('テスト傷病名')
+                at.button(key='new_generate' if mode == 0 else 'plan_generate').click().run()
+                self.assertEqual(len(at.exception), 0)
+                self.assertEqual(len(at.error), 0)
+                self.assertEqual(
+                    [item.value for item in at.text_area if item.label == 'Copy & Paste'],
+                    ['再試行成功'],
+                )
+                self.assertEqual([item.args[0] for item in model.call_args_list], ['gemini-flash-latest'])
+                self.assertEqual(model.return_value.generate_content.call_count, 2)
+                sleep.assert_called_once_with(1)
+
     def test_both_modes_show_safe_errors(self):
         for mode in [0, 1]:
             for error, expected in [
@@ -35,9 +56,11 @@ class GeminiAppTest(unittest.TestCase):
                 (ConnectionError('SECRET_KEY internal_metadata'), '通信'),
                 (TimeoutError('SECRET_KEY internal_metadata'), '時間'),
                 (DummyError(code=404), 'モデル'),
+                (DummyError(code=503), '一時的'),
                 (DummyError(), '生成に失敗'),
             ]:
-                with self.subTest(mode=mode, expected=expected), patch('google.generativeai.configure'), patch('google.generativeai.GenerativeModel') as model:
+                with self.subTest(mode=mode, expected=expected), patch('google.generativeai.configure'), \
+                        patch('google.generativeai.GenerativeModel') as model, patch('gemini_retry.sleep'):
                     model.return_value.generate_content.side_effect = error
                     at = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'app.py')).run()
                     at.sidebar.radio[0].set_value(at.sidebar.radio[0].options[mode]).run()

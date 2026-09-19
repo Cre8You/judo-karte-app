@@ -54,7 +54,9 @@ def _error_kind(exc: Exception) -> str:
         return 'timeout'
     if isinstance(exc, ConnectionError) or any(token in text + name for token in ('connection', 'network', 'transporterror', 'dns')):
         return 'connection'
-    if code in (404, 503) or any(token in code_text for token in ('not_found', 'unavailable')) or ('model' in text and any(token in text for token in ('not found', 'not supported', 'unavailable', 'not available'))):
+    if code == 503 or 'unavailable' in code_text or 'serviceunavailable' in name:
+        return 'service_unavailable'
+    if code == 404 or 'not_found' in code_text or ('model' in text and any(token in text for token in ('not found', 'not supported', 'unavailable', 'not available'))):
         return 'model'
     if code == 429 or 'resource_exhausted' in code_text:
         return 'rate_limit'
@@ -69,6 +71,11 @@ def _error_kind(exc: Exception) -> str:
 def is_rate_limit_error(exc: Exception) -> bool:
     """Whether this failure permits advancing to the next Gemini model."""
     return _error_kind(exc) == 'rate_limit'
+
+
+def is_service_unavailable_error(exc: Exception) -> bool:
+    """Whether this failure permits retrying the same Gemini model."""
+    return _error_kind(exc) == 'service_unavailable'
 
 
 def classify_gemini_error(exc: Exception) -> str:
@@ -86,6 +93,8 @@ def classify_gemini_error(exc: Exception) -> str:
         return 'AIの応答に時間がかかっています。時間をおいてもう一度お試しください。'
     if kind == 'connection':
         return 'AIとの通信に失敗しました。インターネット接続を確認して、もう一度お試しください。'
+    if kind == 'service_unavailable':
+        return 'AIサービスが一時的に混雑しています。時間をおいてもう一度お試しください。'
     if kind == 'model':
         return '選択したAIモデルは現在利用できません。別のモデルを選ぶか、時間をおいてもう一度お試しください。'
     return 'AIによる生成に失敗しました。時間をおいてもう一度お試しください。'

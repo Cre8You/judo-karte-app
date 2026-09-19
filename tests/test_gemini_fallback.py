@@ -4,6 +4,7 @@ from unittest.mock import call, patch
 
 import app
 import gemini_errors
+import gemini_retry
 from test_gemini_errors import DummyError
 
 
@@ -47,7 +48,7 @@ class GeminiFallbackTest(unittest.TestCase):
         ui.info.assert_not_called()
 
     def test_non_rate_errors_never_fallback_even_if_message_mentions_quota(self):
-        for error in [DummyError('API_KEY_INVALID quota'), DummyError(code=401), DummyError(code=403), ConnectionError('quota'), TimeoutError('429'), DummyError('quota', code=404), DummyError('quota', code=503), DummyError('unknown'), DummyError(code=504)]:
+        for error in [DummyError('API_KEY_INVALID quota'), DummyError(code=401), DummyError(code=403), ConnectionError('quota'), TimeoutError('429'), DummyError('quota', code=404), DummyError('unknown'), DummyError(code=504)]:
             with self.subTest(error=error):
                 ui = self.generate(LATEST, [error], [LATEST])
                 ui.error.assert_called_once()
@@ -65,8 +66,45 @@ class GeminiFallbackTest(unittest.TestCase):
         with patch.object(app, 'GEMINI_FALLBACK_MODELS', (LATEST, LATEST, FLASH, FLASH, LITE), create=True):
             self.generate(LATEST, [DummyError(code=429), DummyError(code=429), SimpleNamespace(text='ok')], [LATEST, FLASH, LITE])
 
-    def test_non_rate_error_on_second_candidate_stops(self):
-        self.generate(LATEST, [DummyError(code=429), DummyError(code=503)], [LATEST, FLASH])
+    def test_404_on_second_candidate_stops(self):
+        self.generate(LATEST, [DummyError(code=429), DummyError(code=404)], [LATEST, FLASH])
+
+    def test_503_retries_same_model_with_exponential_backoff(self):
+        with patch.object(app.genai, 'configure'), patch.object(app.genai, 'GenerativeModel') as factory, \
+                patch.object(app, 'st') as ui, patch.object(gemini_retry, 'sleep') as sleep:
+            factory.return_value.generate_content.side_effect = [
+                DummyError(code=503),
+                DummyError(code=503),
+                DummyError(code=503),
+                SimpleNamespace(text='recovered'),
+            ]
+
+            app.generate_with_gemini('DUMMY_KEY', LATEST, 'same prompt', '生成中')
+
+            factory.assert_called_once_with(LATEST)
+            self.assertEqual(
+                factory.return_value.generate_content.call_args_list,
+                [call('same prompt', request_options={'retry': None})] * 4,
+            )
+            self.assertEqual(sleep.call_args_list, [call(1), call(2), call(4)])
+            ui.text_area.assert_called_once_with('Copy & Paste', 'recovered', height=700)
+            ui.error.assert_not_called()
+            ui.info.assert_not_called()
+
+    def test_503_exhaustion_stays_on_same_model_and_shows_temporary_error(self):
+        with patch.object(app.genai, 'configure'), patch.object(app.genai, 'GenerativeModel') as factory, \
+                patch.object(app, 'st') as ui, patch.object(gemini_retry, 'sleep') as sleep:
+            factory.return_value.generate_content.side_effect = [DummyError(code=503)] * 4
+
+            app.generate_with_gemini('DUMMY_KEY', LATEST, 'same prompt', '生成中')
+
+            factory.assert_called_once_with(LATEST)
+            self.assertEqual(factory.return_value.generate_content.call_count, 4)
+            self.assertEqual(sleep.call_args_list, [call(1), call(2), call(4)])
+            ui.error.assert_called_once()
+            self.assertIn('一時的', ui.error.call_args.args[0])
+            ui.text_area.assert_not_called()
+            ui.info.assert_not_called()
 
     def test_pure_rate_limit_predicate(self):
         predicate = getattr(gemini_errors, 'is_rate_limit_error', None)

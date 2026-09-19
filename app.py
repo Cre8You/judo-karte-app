@@ -8,6 +8,7 @@ from evaluation_config import JOINT_CONFIG, NRS_OPTIONS, ROM_FACTORS, SIDE_OPTIO
 from plan_prompt import build_rehabilitation_plan_prompt
 from plan_validation import validate_plan_inputs
 from gemini_errors import classify_gemini_error, is_rate_limit_error
+from gemini_retry import generate_content_with_retry
 
 st.set_page_config(page_title="柔道整復師カルテAIアシスタント", layout="wide")
 
@@ -156,8 +157,8 @@ def generate_with_gemini(gemini_key: str, selected_model: str, prompt: str, spin
             for index, model_id in enumerate(candidates):
                 try:
                     model = genai.GenerativeModel(model_id)
-                    # Disable SDK retries: each candidate gets one request only.
-                    response = model.generate_content(prompt, request_options={"retry": None})
+                    # Keep SDK retries disabled so 503 and 429 follow this app's policies.
+                    response = generate_content_with_retry(model, prompt)
                 except Exception as exc:
                     if is_rate_limit_error(exc) and index + 1 < len(candidates):
                         continue

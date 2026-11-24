@@ -1,34 +1,40 @@
 import datetime
 from typing import Dict, List
 
-import google.generativeai as genai
 import streamlit as st
 
+import gemini_client
 from evaluation_config import JOINT_CONFIG, NRS_OPTIONS, ROM_FACTORS, SIDE_OPTIONS, SPECIAL_TEST_RESULTS
 from plan_prompt import build_rehabilitation_plan_prompt
 from plan_validation import validate_plan_inputs
 from gemini_errors import classify_gemini_error, is_rate_limit_error, is_service_unavailable_error
-from gemini_retry import generate_content_with_retry
+from gemini_retry import open_stream_with_retry
 
 st.set_page_config(page_title="柔道整復師カルテAIアシスタント", layout="wide")
 
 MODEL_OPTIONS = {
-    "gemini-flash-latest（1日1500回・基本）": "gemini-flash-latest",
-    "gemini-3.0-flash（最新鋭！）": "gemini-3.0-flash",
-    "gemini-2.5-flash（高性能！）": "gemini-2.5-flash",
-    "gemini-1.5-pro（推論特化）": "gemini-1.5-pro",
+    "Gemini Flash 最新版（標準・おすすめ）": "gemini-flash-latest",
+    "Gemini 3.8 Flash（固定版）": "gemini-3.8-flash",
+    "Gemini 3.5 Flash-Lite（最速・軽量）": "gemini-3.5-flash-lite",
+    "Gemini 2.5 Flash（旧モデル）": "gemini-2.5-flash",
 }
 
+# Rate-limited (429) or still-busy (503 after retries) models fall forward
+# along this chain, starting from the selected model.
 GEMINI_FALLBACK_MODELS = (
     "gemini-flash-latest",
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite",
+    "gemini-3.8-flash",
+    "gemini-3.5-flash-lite",
 )
-GEMINI_503_FALLBACK_MODEL = "gemini-3.5-flash"
 GEMINI_MODEL_NAMES = {
-    "gemini-flash-latest": "Gemini Flash",
+    "gemini-flash-latest": "Gemini Flash 最新版",
+    "gemini-3.8-flash": "Gemini 3.8 Flash",
+    "gemini-3.5-flash-lite": "Gemini 3.5 Flash-Lite",
     "gemini-2.5-flash": "Gemini 2.5 Flash",
-    "gemini-2.5-flash-lite": "Gemini 2.5 Flash Lite",
+}
+FALLBACK_REASONS = {
+    "rate_limit": "上位モデルの利用上限に達した",
+    "service_unavailable": "上位モデルが混雑していた",
 }
 
 
@@ -146,37 +152,63 @@ def format_special_results(results: Dict[str, Dict[str, str]]) -> str:
     return "\n".join(lines)
 
 
-def generate_with_gemini(gemini_key: str, selected_model: str, prompt: str, spinner_text: str) -> None:
-    with st.spinner(spinner_text):
+def fallback_candidates(selected_model: str) -> List[str]:
+    candidates = list(dict.fromkeys(GEMINI_FALLBACK_MODELS))
+    if selected_model in candidates:
+        return candidates[candidates.index(selected_model):]
+    return [selected_model]
+
+
+def open_first_available_stream(client, selected_model: str, prompt: str):
+    """Return (model_id, first_text, rest, fallback_reason) or raise the last error."""
+    candidates = fallback_candidates(selected_model)
+    fallback_reason = None
+    for index, model_id in enumerate(candidates):
         try:
-            genai.configure(api_key=gemini_key)
-            candidates = list(dict.fromkeys(GEMINI_FALLBACK_MODELS))
-            if selected_model in candidates:
-                candidates = candidates[candidates.index(selected_model):]
-            else:
-                candidates = [selected_model]
-            used_rate_limit_fallback = False
-            for index, model_id in enumerate(candidates):
-                try:
-                    model = genai.GenerativeModel(model_id)
-                    # Keep SDK retries disabled so 503 and 429 follow this app's policies.
-                    response = generate_content_with_retry(model, prompt)
-                except Exception as exc:
-                    if is_service_unavailable_error(exc) and model_id == "gemini-flash-latest":
-                        candidates.insert(index + 1, GEMINI_503_FALLBACK_MODEL)
-                        continue
-                    if is_rate_limit_error(exc) and index + 1 < len(candidates):
-                        used_rate_limit_fallback = True
-                        continue
-                    raise
-                break
-            result_text = response.text
-            if model_id != selected_model and used_rate_limit_fallback:
-                st.info(f"上位モデルの利用上限に達したため、{GEMINI_MODEL_NAMES[model_id]}で生成しました。")
-            st.subheader("✨ 出力結果")
-            st.text_area("Copy & Paste", result_text, height=700)
+            first_text, rest = open_stream_with_retry(client, model_id, prompt)
+            return model_id, first_text, rest, fallback_reason
         except Exception as exc:
-            st.error(classify_gemini_error(exc))
+            has_next = index + 1 < len(candidates)
+            if has_next and is_rate_limit_error(exc):
+                fallback_reason = fallback_reason or "rate_limit"
+                continue
+            if has_next and is_service_unavailable_error(exc):
+                fallback_reason = fallback_reason or "service_unavailable"
+                continue
+            raise
+    raise RuntimeError("no Gemini model candidates")  # unreachable: candidates is never empty
+
+
+def generate_with_gemini(gemini_key: str, selected_model: str, prompt: str, spinner_text: str) -> None:
+    try:
+        with st.spinner(spinner_text):
+            client = gemini_client.make_client(gemini_key)
+            model_id, result_text, rest, fallback_reason = open_first_available_stream(client, selected_model, prompt)
+    except Exception as exc:
+        st.error(classify_gemini_error(exc))
+        return
+
+    if fallback_reason:
+        st.info(f"{FALLBACK_REASONS[fallback_reason]}ため、{GEMINI_MODEL_NAMES.get(model_id, model_id)}で生成しました。")
+    st.subheader("✨ 出力結果")
+    output = st.empty()
+    output.text(result_text)
+    try:
+        # Show text as it arrives so the user is not left staring at a spinner.
+        for chunk in rest:
+            result_text += chunk
+            output.text(result_text)
+    except Exception as exc:
+        st.error(classify_gemini_error(exc))
+        if not result_text:
+            output.empty()
+            return
+        st.warning("途中までの出力です。必要に応じて再生成してください。")
+    if not result_text:
+        output.empty()
+        st.error("AIから文章が返ってきませんでした。入力内容を確認して、もう一度お試しください。")
+        return
+    output.text_area("Copy & Paste", result_text, height=700)
 
 
 def render_new_patient_mode(gemini_key: str, selected_model: str) -> None:
@@ -270,7 +302,7 @@ ADL指導
     next_visit = st.text_input("📅 次回", placeholder="例：明日、固定の適合状態確認および症状経過観察のため来院予定。", key="new_next_visit")
     st.divider()
 
-    if st.button("🚀 カルテ生成開始", use_container_width=True, key="new_generate"):
+    if st.button("🚀 カルテ生成開始", width="stretch", key="new_generate"):
         if not gemini_key:
             st.error("APIキーを入力してください")
         elif not diagnosis:
@@ -374,7 +406,7 @@ def render_plan_mode(gemini_key: str, selected_model: str) -> None:
         clinical_note = st.text_area("柔道整復師所見・補足（任意）", placeholder="例：腫脹、圧痛、歩容、固定状況、治癒経過など", height=100, key="plan_clinical_note")
 
     st.divider()
-    if st.button("🚀 計画書生成開始", use_container_width=True, key="plan_generate"):
+    if st.button("🚀 計画書生成開始", width="stretch", key="plan_generate"):
         validation_warning, patient_id_for_prompt = validate_plan_inputs(
             patient_id,
             disease_name,
@@ -417,6 +449,7 @@ def main() -> None:
         st.divider()
         st.header("🔑 AI設定")
         gemini_key = st.text_input("Gemini APIキーを入力", type="password")
+        st.caption("⚠️ 無料枠のAPIキーでは、入力内容がGoogleのサービス改善に使われる場合があります。患者を特定できる情報は入力しないか、課金を有効にしたAPIキーを使用してください。")
         st.header("🧠 モデル設定")
         selected_label = st.selectbox("使用するAIモデル", list(MODEL_OPTIONS.keys()), index=0)
         selected_model = MODEL_OPTIONS[selected_label]

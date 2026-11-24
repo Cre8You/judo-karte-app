@@ -4,11 +4,23 @@ import math
 import re
 
 
-def _retry_seconds(exc, text):
+def _detail_list(exc):
+    """Error details as a list for both SDKs.
+
+    google-generativeai exposes a list; google-genai exposes the response JSON
+    ({"error": {"details": [...]}}).
+    """
     details = getattr(exc, 'details', ())
+    if isinstance(details, dict):
+        error = details.get('error', details)
+        details = error.get('details', ()) if isinstance(error, dict) else ()
     if not isinstance(details, (list, tuple)):
-        details = ()
-    for detail in details:
+        return ()
+    return details
+
+
+def _retry_seconds(exc, text):
+    for detail in _detail_list(exc):
         delay = detail.get('retryDelay') if isinstance(detail, dict) else getattr(detail, 'retry_delay', None)
         if delay is None:
             continue
@@ -38,13 +50,11 @@ def _error_kind(exc: Exception) -> str:
     if callable(code):
         code = code()
     code_text = str(code).lower()
-    details = getattr(exc, 'details', ())
     invalid_key = 'api_key_invalid' in text or 'api key not valid' in text
-    if isinstance(details, (list, tuple)):
-        invalid_key |= any(
-            (detail.get('reason') if isinstance(detail, dict) else getattr(detail, 'reason', None)) == 'API_KEY_INVALID'
-            for detail in details
-        )
+    invalid_key |= any(
+        (detail.get('reason') if isinstance(detail, dict) else getattr(detail, 'reason', None)) == 'API_KEY_INVALID'
+        for detail in _detail_list(exc)
+    )
     if invalid_key:
         return 'invalid_key'
     if code in (401, 403) or any(token in code_text + text for token in ('unauthenticated', 'permission_denied', 'unauthorized', 'forbidden')):
@@ -52,7 +62,7 @@ def _error_kind(exc: Exception) -> str:
     name = type(exc).__name__.lower()
     if isinstance(exc, TimeoutError) or code in (408, 504) or 'deadline_exceeded' in code_text or any(token in text + name for token in ('timeout', 'timed out', 'deadline')):
         return 'timeout'
-    if isinstance(exc, ConnectionError) or any(token in text + name for token in ('connection', 'network', 'transporterror', 'dns')):
+    if isinstance(exc, ConnectionError) or any(token in text + name for token in ('connection', 'connecterror', 'network', 'transporterror', 'dns')):
         return 'connection'
     if code == 503 or 'unavailable' in code_text or 'serviceunavailable' in name:
         return 'service_unavailable'

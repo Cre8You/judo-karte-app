@@ -83,6 +83,30 @@ def is_rate_limit_error(exc: Exception) -> bool:
     return _error_kind(exc) == 'rate_limit'
 
 
+def is_model_unavailable_error(exc: Exception) -> bool:
+    """Whether this model cannot be used (e.g. 404, alias no longer served)."""
+    return _error_kind(exc) == 'model'
+
+
+def is_invalid_key_error(exc: Exception) -> bool:
+    return _error_kind(exc) == 'invalid_key'
+
+
+def describe_for_log(exc: Exception) -> str:
+    """Short technical summary for the server log (never shown in the UI).
+
+    Google's error messages name the model and its replacement, which is what
+    the app owner needs to diagnose "model unavailable" errors.
+    """
+    code = getattr(exc, 'code', None)
+    if callable(code):
+        code = code()
+    status = getattr(exc, 'status', None)
+    message = getattr(exc, 'message', None) or str(exc)
+    message = ' '.join(str(message).split())[:300]
+    return f'type={type(exc).__name__} code={code} status={status} kind={_error_kind(exc)} message={message}'
+
+
 def is_service_unavailable_error(exc: Exception) -> bool:
     """Whether this failure permits retrying the same Gemini model."""
     return _error_kind(exc) == 'service_unavailable'

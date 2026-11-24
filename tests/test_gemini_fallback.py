@@ -73,7 +73,7 @@ class GeminiFallbackTest(unittest.TestCase):
 
     def test_non_retryable_errors_never_fallback(self):
         for error in [DummyError('API_KEY_INVALID quota'), DummyError(code=401), DummyError(code=403), ConnectionError('quota'),
-                      TimeoutError('429'), DummyError('quota', code=404), DummyError('unknown'), DummyError(code=504), DummyError(code=400)]:
+                      TimeoutError('429'), DummyError('unknown'), DummyError(code=504), DummyError(code=400)]:
             with self.subTest(error=error):
                 ui = self.generate(LATEST, [error], [LATEST])
                 ui.error.assert_called_once()
@@ -91,9 +91,30 @@ class GeminiFallbackTest(unittest.TestCase):
         with patch.object(app, 'GEMINI_FALLBACK_MODELS', (LATEST, LATEST, FLASH_3_8, FLASH_3_8, LITE_3_5)):
             self.generate(LATEST, [DummyError(code=429), DummyError(code=429), ok('ok')], [LATEST, FLASH_3_8, LITE_3_5])
 
-    def test_404_on_second_candidate_stops(self):
-        ui = self.generate(LATEST, [DummyError(code=429), DummyError(code=404)], [LATEST, FLASH_3_8])
+    def test_unavailable_latest_alias_falls_forward_and_tells_user(self):
+        ui = self.generate(LATEST, [DummyError('model not found', code=404), ok('3.8 result')], [LATEST, FLASH_3_8])
+        ui.info.assert_called_once_with('選択したモデルが現在利用できなかったため、Gemini 3.8 Flashで生成しました。')
+        ui.error.assert_not_called()
+        self.assertEqual(self.final_text(ui), '3.8 result')
+
+    def test_404_on_last_candidate_stops_with_model_error(self):
+        ui = self.generate(LATEST, [DummyError(code=404)] * 3, [LATEST, FLASH_3_8, LITE_3_5])
+        ui.error.assert_called_once()
         self.assertIn('モデル', ui.error.call_args.args[0])
+        ui.empty.return_value.text_area.assert_not_called()
+
+    def test_404_on_model_outside_chain_does_not_fallback(self):
+        ui = self.generate(FLASH_2_5, [DummyError(code=404)], [FLASH_2_5])
+        self.assertIn('モデル', ui.error.call_args.args[0])
+
+    def test_failures_are_logged_without_reaching_the_ui(self):
+        with self.assertLogs('judo_karte_app', level='WARNING') as logs:
+            ui = self.generate(LATEST, [DummyError('This model models/x is no longer available', code=404), ok('ok')], [LATEST, FLASH_3_8])
+        self.assertIn('model=gemini-flash-latest', logs.output[0])
+        self.assertIn('code=404', logs.output[0])
+        self.assertIn('no longer available', logs.output[0])
+        for args in ui.info.call_args_list + ui.error.call_args_list:
+            self.assertNotIn('no longer available', args.args[0])
 
     def test_503_retries_same_model_with_short_backoff(self):
         ui = self.generate(LATEST, [DummyError(code=503), DummyError(code=503), ok('recovered')], [LATEST] * 3)

@@ -80,13 +80,44 @@ class OpenStreamTest(unittest.TestCase):
         self.assertIsNotNone(configs[0])
         self.assertIsNone(configs[1])
 
-    def test_other_400_is_not_retried(self):
+    def test_any_400_with_thinking_retries_once_without_it(self):
+        def bad():
+            raise api_error(400, 'INVALID_ARGUMENT', message='Request contains an invalid argument.')
+            yield  # pragma: no cover
+        client = fake_client(bad(), chunks('ok'))
+        with self.assertLogs('judo_karte_app', level='WARNING'):
+            first, _ = gemini_client.open_stream(client, 'gemini-flash-latest', 'prompt')
+        self.assertEqual(first, 'ok')
+        self.assertEqual(client.models.generate_content_stream.call_count, 2)
+
+    def test_400_is_raised_if_retry_without_thinking_also_fails(self):
+        def bad():
+            raise api_error(400, 'INVALID_ARGUMENT', message='Request contains an invalid argument.')
+            yield  # pragma: no cover
+        def bad_again():
+            raise api_error(400, 'INVALID_ARGUMENT', message='Request contains an invalid argument.')
+            yield  # pragma: no cover
+        client = fake_client(bad(), bad_again())
+        with self.assertLogs('judo_karte_app', level='WARNING'), self.assertRaises(errors.APIError):
+            gemini_client.open_stream(client, 'gemini-flash-latest', 'prompt')
+        self.assertEqual(client.models.generate_content_stream.call_count, 2)
+
+    def test_invalid_key_is_not_retried(self):
+        def bad():
+            raise api_error(400, 'INVALID_ARGUMENT', message='API key not valid.', details=[{'reason': 'API_KEY_INVALID'}])
+            yield  # pragma: no cover
+        client = fake_client(bad(), chunks('never'))
+        with self.assertRaises(errors.APIError):
+            gemini_client.open_stream(client, 'gemini-flash-latest', 'prompt')
+        self.assertEqual(client.models.generate_content_stream.call_count, 1)
+
+    def test_400_on_lite_is_not_retried(self):
         def bad():
             raise api_error(400, 'INVALID_ARGUMENT', message='Request contains an invalid argument.')
             yield  # pragma: no cover
         client = fake_client(bad(), chunks('never'))
         with self.assertRaises(errors.APIError):
-            gemini_client.open_stream(client, 'gemini-flash-latest', 'prompt')
+            gemini_client.open_stream(client, 'gemini-3.5-flash-lite', 'prompt')
         self.assertEqual(client.models.generate_content_stream.call_count, 1)
 
 

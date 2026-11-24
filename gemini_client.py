@@ -4,10 +4,15 @@ All SDK-specific code lives here so the rest of the app (and the tests) only
 deal with plain text chunks.
 """
 
+import logging
 from typing import Iterator, Optional, Tuple
 
 from google import genai
 from google.genai import errors, types
+
+from gemini_errors import describe_for_log, is_invalid_key_error
+
+logger = logging.getLogger("judo_karte_app")
 
 # Give up on a single request after 90 seconds instead of spinning forever.
 REQUEST_TIMEOUT_MS = 90_000
@@ -55,11 +60,9 @@ def _open(client, model_id: str, prompt: str, thinking: Optional[types.ThinkingC
 
 
 def _is_thinking_rejected(exc: Exception) -> bool:
-    return (
-        isinstance(exc, errors.APIError)
-        and exc.code == 400
-        and "thinking" in str(getattr(exc, "message", "") or "").lower()
-    )
+    # Any 400 while a thinking setting was sent may mean the model behind an
+    # alias does not accept it; the error wording is not stable enough to match.
+    return isinstance(exc, errors.APIError) and exc.code == 400 and not is_invalid_key_error(exc)
 
 
 def open_stream(client, model_id: str, prompt: str) -> Tuple[str, Iterator[str]]:
@@ -72,4 +75,5 @@ def open_stream(client, model_id: str, prompt: str) -> Tuple[str, Iterator[str]]
         # fall back to the model's default once instead of failing.
         if thinking is None or not _is_thinking_rejected(exc):
             raise
+        logger.warning("Thinking setting rejected, retrying with model default: model=%s %s", model_id, describe_for_log(exc))
         return _open(client, model_id, prompt, None)

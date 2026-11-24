@@ -1,4 +1,5 @@
 import datetime
+import logging
 from typing import Dict, List
 
 import streamlit as st
@@ -7,10 +8,20 @@ import gemini_client
 from evaluation_config import JOINT_CONFIG, NRS_OPTIONS, ROM_FACTORS, SIDE_OPTIONS, SPECIAL_TEST_RESULTS
 from plan_prompt import build_rehabilitation_plan_prompt
 from plan_validation import validate_plan_inputs
-from gemini_errors import classify_gemini_error, is_rate_limit_error, is_service_unavailable_error
+from gemini_errors import (
+    classify_gemini_error,
+    describe_for_log,
+    is_model_unavailable_error,
+    is_rate_limit_error,
+    is_service_unavailable_error,
+)
 from gemini_retry import open_stream_with_retry
 
 st.set_page_config(page_title="柔道整復師カルテAIアシスタント", layout="wide")
+
+# Gemini failures are written to the server log (Streamlit Cloud: "Manage app"
+# -> logs) so the real reason can be checked; the UI only shows fixed text.
+logger = logging.getLogger("judo_karte_app")
 
 MODEL_OPTIONS = {
     "Gemini Flash 最新版（標準・おすすめ）": "gemini-flash-latest",
@@ -19,8 +30,9 @@ MODEL_OPTIONS = {
     "Gemini 2.5 Flash（旧モデル）": "gemini-2.5-flash",
 }
 
-# Rate-limited (429) or still-busy (503 after retries) models fall forward
-# along this chain, starting from the selected model.
+# Rate-limited (429), still-busy (503 after retries) or unavailable (404,
+# e.g. the -latest alias changed) models fall forward along this chain,
+# starting from the selected model.
 GEMINI_FALLBACK_MODELS = (
     "gemini-flash-latest",
     "gemini-3.8-flash",
@@ -35,6 +47,7 @@ GEMINI_MODEL_NAMES = {
 FALLBACK_REASONS = {
     "rate_limit": "上位モデルの利用上限に達した",
     "service_unavailable": "上位モデルが混雑していた",
+    "model_unavailable": "選択したモデルが現在利用できなかった",
 }
 
 
@@ -168,7 +181,11 @@ def open_first_available_stream(client, selected_model: str, prompt: str):
             first_text, rest = open_stream_with_retry(client, model_id, prompt)
             return model_id, first_text, rest, fallback_reason
         except Exception as exc:
+            logger.warning("Gemini request failed: model=%s %s", model_id, describe_for_log(exc))
             has_next = index + 1 < len(candidates)
+            if has_next and is_model_unavailable_error(exc):
+                fallback_reason = fallback_reason or "model_unavailable"
+                continue
             if has_next and is_rate_limit_error(exc):
                 fallback_reason = fallback_reason or "rate_limit"
                 continue
@@ -199,6 +216,7 @@ def generate_with_gemini(gemini_key: str, selected_model: str, prompt: str, spin
             result_text += chunk
             output.text(result_text)
     except Exception as exc:
+        logger.warning("Gemini stream interrupted: model=%s %s", model_id, describe_for_log(exc))
         st.error(classify_gemini_error(exc))
         if not result_text:
             output.empty()
